@@ -152,6 +152,20 @@ public class EpoxyAdapterTest {
   }
 
   @Test
+  public void testRemoveAllModels() {
+    for (int i = 0; i < 10; i++) {
+      TestModel model = new TestModel();
+      testAdapter.addModels(model);
+    }
+
+    testAdapter.removeAllModels();
+    verify(observer).onItemRangeRemoved(0, 10);
+    assertEquals(0, testAdapter.models.size());
+
+    checkDifferState();
+  }
+
+  @Test
   public void testRemoveAllAfterModels() {
     List<TestModel> models = new ArrayList<>();
     for (int i = 0; i < 10; i++) {
@@ -368,7 +382,7 @@ public class EpoxyAdapterTest {
 
     testAdapter.addModel(testModel);
 
-    thrown.expect(IllegalStateException.class);
+    thrown.expect(IllegalEpoxyUsage.class);
     thrown.expectMessage("Cannot change a model's id after it has been added to the adapter");
     testModel.id(200);
   }
@@ -390,7 +404,7 @@ public class EpoxyAdapterTest {
     testAdapter.models.add(testModel);
     testAdapter.notifyModelsChanged();
 
-    thrown.expect(IllegalStateException.class);
+    thrown.expect(IllegalEpoxyUsage.class);
     thrown.expectMessage("Cannot change a model's id after it has been added to the adapter");
     testModel.id(200);
   }

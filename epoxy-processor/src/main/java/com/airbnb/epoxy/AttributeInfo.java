@@ -1,127 +1,206 @@
 package com.airbnb.epoxy;
 
+import com.airbnb.epoxy.GeneratedModelInfo.AttributeGroup;
 import com.squareup.javapoet.AnnotationSpec;
-import com.squareup.javapoet.ClassName;
+import com.squareup.javapoet.CodeBlock;
 import com.squareup.javapoet.TypeName;
 
-import java.lang.annotation.ElementType;
-import java.lang.annotation.Target;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.List;
 
-import javax.lang.model.element.AnnotationMirror;
-import javax.lang.model.type.DeclaredType;
+import javax.lang.model.type.TypeMirror;
 
-public class AttributeInfo {
+import static com.airbnb.epoxy.Utils.isViewClickListenerType;
+import static com.airbnb.epoxy.Utils.isViewLongClickListenerType;
 
-  private final List<AnnotationSpec> setterAnnotations = new ArrayList<>();
-  private final List<AnnotationSpec> getterAnnotations = new ArrayList<>();
-  private final String name;
-  private final TypeName type;
-  private final boolean useInHash;
-  private final boolean generateSetter;
-  private final boolean hasFinalModifier;
-  private final boolean packagePrivate;
+abstract class AttributeInfo {
+
+  protected String fieldName;
+  protected TypeMirror typeMirror;
+  protected String modelName;
+  protected String modelPackageName;
+  protected boolean useInHash;
+  protected boolean ignoreRequireHashCode;
+  protected boolean doNotUseInToString;
+  protected boolean generateSetter;
+  protected List<AnnotationSpec> setterAnnotations = new ArrayList<>();
+  protected boolean generateGetter;
+  protected List<AnnotationSpec> getterAnnotations = new ArrayList<>();
+  protected boolean hasFinalModifier;
+  protected boolean packagePrivate;
+  protected CodeBlock javaDoc;
+
+  /** If this attribute is in an attribute group this is the name of the group. */
+  String groupKey;
+  private AttributeGroup attributeGroup;
+
   /**
    * Track whether there is a setter method for this attribute on a super class so that we can call
    * through to super.
    */
-  private final boolean hasSuperSetter;
+  protected boolean hasSuperSetter;
+  // for private fields (Kotlin case)
+  protected boolean isPrivate;
+  protected String getterMethodName;
 
-  AttributeInfo(String name, TypeName type,
-      List<? extends AnnotationMirror> annotationMirrors, EpoxyAttribute annotation,
-      boolean hasSuperSetter, boolean hasFinalModifier, boolean packagePrivate) {
-    this.name = name;
-    this.type = type;
-    this.hasSuperSetter = hasSuperSetter;
-    this.hasFinalModifier = hasFinalModifier;
-    this.packagePrivate = packagePrivate;
-    useInHash = annotation.hash();
-    generateSetter = annotation.setter();
-    buildAnnotationLists(annotationMirrors);
-  }
+  protected String setterMethodName;
 
   /**
-   * Keeps track of annotations on the attribute so that they can be used in the generated setter
-   * and getter method. Setter and getter annotations are stored separately since the annotation may
-   * not target both method and parameter types.
+   * True if this attribute is completely generated as a field on the generated model. False if it
+   * exists as a user defined attribute in a model super class.
    */
-  private void buildAnnotationLists(List<? extends AnnotationMirror> annotationMirrors) {
-    for (AnnotationMirror annotationMirror : annotationMirrors) {
-      if (!annotationMirror.getElementValues().isEmpty()) {
-        // Not supporting annotations with values for now
-        continue;
-      }
+  protected boolean isGenerated;
+  /** If {@link #isGenerated} is true, a default value for the field can be set here. */
+  final DefaultValue codeToSetDefault = new DefaultValue();
 
-      ClassName annotationClass =
-          ClassName.bestGuess(annotationMirror.getAnnotationType().toString());
-      if (annotationClass.equals(ClassName.get(EpoxyAttribute.class))) {
-        // Don't include our own annotation
-        continue;
-      }
+  static class DefaultValue {
+    /** An explicitly defined default via the default param in the prop annotation. */
+    CodeBlock explicit;
+    /**
+     * An implicitly assumed default, either via an @Nullable annotation or a primitive's default
+     * value. This is overridden if an explicit value is set.
+     */
+    CodeBlock implicit;
 
-      DeclaredType annotationType = annotationMirror.getAnnotationType();
-      // A target may exist on an annotation type to specify where the annotation can
-      // be used, for example fields, methods, or parameters.
-      Target targetAnnotation = annotationType.asElement().getAnnotation(Target.class);
+    boolean isPresent() {
+      return explicit != null || implicit != null;
+    }
 
-      // Allow all target types if no target was specified on the annotation
-      List<ElementType> elementTypes =
-          Arrays.asList(targetAnnotation == null ? ElementType.values() : targetAnnotation.value());
+    boolean isEmpty() {
+      return !isPresent();
+    }
 
-      AnnotationSpec annotationSpec = AnnotationSpec.builder(annotationClass).build();
-      if (elementTypes.contains(ElementType.PARAMETER)) {
-        setterAnnotations.add(annotationSpec);
-      }
-
-      if (elementTypes.contains(ElementType.METHOD)) {
-        getterAnnotations.add(annotationSpec);
-      }
+    public CodeBlock value() {
+      return explicit != null ? explicit : implicit;
     }
   }
 
-  public String getName() {
-    return name;
+  /**
+   * If {@link #isGenerated} is true, this represents whether null is a valid value to set on the
+   * attribute. If this is true, then the {@link #codeToSetDefault} should be null unless a
+   * different default value is explicitly set.
+   * <p>
+   * This is Boolean to have null represent that nullability was not explicitly set, eg for
+   * primitives or legacy attributes that weren't made with nullability support in mind.
+   */
+  private Boolean isNullable;
+
+  protected void setJavaDocString(String docComment) {
+    if (docComment != null && !docComment.trim().isEmpty()) {
+      javaDoc = CodeBlock.of(docComment);
+    } else {
+      javaDoc = null;
+    }
   }
 
-  public TypeName getType() {
-    return type;
+  public boolean isNullable() {
+    if (!hasSetNullability()) {
+      throw new IllegalStateException("Nullability has not been set");
+    }
+
+    return isNullable;
   }
 
-  public boolean useInHash() {
+  public boolean hasSetNullability() {
+    return isNullable != null;
+  }
+
+  public void setNullable(boolean nullable) {
+    if (isPrimitive()) {
+      throw new IllegalStateException("Primitives cannot be nullable");
+    }
+
+    isNullable = nullable;
+  }
+
+  public boolean isPrimitive() {
+    return getTypeName().isPrimitive();
+  }
+
+  boolean isRequired() {
+    return isGenerated && codeToSetDefault.isEmpty();
+  }
+
+  String getFieldName() {
+    return fieldName;
+  }
+
+  TypeName getTypeName() {
+    return TypeName.get(typeMirror);
+  }
+
+  public TypeMirror getTypeMirror() {
+    return typeMirror;
+  }
+
+  boolean useInHash() {
     return useInHash;
   }
 
-  public boolean generateSetter() {
+  boolean ignoreRequireHashCode() {
+    return ignoreRequireHashCode;
+  }
+
+  public boolean doNotUseInToString() {
+    return doNotUseInToString;
+  }
+
+  boolean generateSetter() {
     return generateSetter;
   }
 
-  public List<AnnotationSpec> getSetterAnnotations() {
+  List<AnnotationSpec> getSetterAnnotations() {
     return setterAnnotations;
   }
 
-  public List<AnnotationSpec> getGetterAnnotations() {
+  boolean generateGetter() {
+    return generateGetter;
+  }
+
+  List<AnnotationSpec> getGetterAnnotations() {
     return getterAnnotations;
   }
 
-  public boolean hasSuperSetterMethod() {
+  boolean hasSuperSetterMethod() {
     return hasSuperSetter;
   }
 
-  public boolean hasFinalModifier() {
+  boolean hasFinalModifier() {
     return hasFinalModifier;
   }
 
-  public boolean isPackagePrivate() {
+  boolean isPackagePrivate() {
     return packagePrivate;
+  }
+
+  String getterCode() {
+    return isPrivate ? getterMethodName + "()" : fieldName;
+  }
+
+  // Special case to avoid generating recursive getter if field and its getter names are the same
+  String superGetterCode() {
+    return isPrivate ? String.format("super.%s()", getterMethodName) : fieldName;
+  }
+
+  String setterCode() {
+    return (isGenerated ? "this." : "super.")
+        + (isPrivate ? setterMethodName + "($L)" : fieldName + " = $L");
+  }
+
+  String generatedSetterName() {
+    return fieldName;
+  }
+
+  String generatedGetterName() {
+    return fieldName;
   }
 
   @Override
   public String toString() {
-    return "ModelAttributeData{"
-        + "name='" + name + '\''
-        + ", type=" + type
+    return "Attribute {"
+        + "model='" + modelName + '\''
+        + ", name='" + fieldName + '\''
+        + ", type=" + getTypeName()
         + '}';
   }
 
@@ -136,16 +215,36 @@ public class AttributeInfo {
 
     AttributeInfo that = (AttributeInfo) o;
 
-    if (!name.equals(that.name)) {
+    if (!fieldName.equals(that.fieldName)) {
       return false;
     }
-    return type.equals(that.type);
+    return getTypeName().equals(that.getTypeName());
   }
 
   @Override
   public int hashCode() {
-    int result = name.hashCode();
-    result = 31 * result + type.hashCode();
+    int result = fieldName.hashCode();
+    result = 31 * result + getTypeName().hashCode();
     return result;
+  }
+
+  boolean isViewClickListener() {
+    return isViewClickListenerType(getTypeMirror()) || isViewLongClickListenerType(getTypeMirror());
+  }
+
+  String getPackageName() {
+    return modelPackageName;
+  }
+
+  void setAttributeGroup(AttributeGroup group) {
+    attributeGroup = group;
+  }
+
+  public AttributeGroup getAttributeGroup() {
+    return attributeGroup;
+  }
+
+  boolean isOverload() {
+    return attributeGroup != null && attributeGroup.attributes.size() > 1;
   }
 }
